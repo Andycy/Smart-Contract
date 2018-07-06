@@ -2,7 +2,7 @@ pragma solidity ^0.4.24;
 
 import "./openzeppelin-solidity/contracts/crowdsale/distribution/FinalizableCrowdsale.sol";
 import "./CrowdsaleFund.sol";
-import "./StrayToken.sol"
+import "./StrayToken.sol";
 
 /**
  * @title StrayCrowdsale
