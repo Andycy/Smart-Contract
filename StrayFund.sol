@@ -3,9 +3,12 @@ pragma solidity ^0.4.24;
 import "./openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "./openzeppelin-solidity/contracts/token/ERC20/ERC20Basic.sol";
 import "./CrowdsaleFund.sol";
+import "./DateTimeUtility.sol";
+import "./StrayToken.sol";
 
 contract StrayFund is CrowdsaleFund {
 	using SafeMath for uint256;
+	using DateTimeUtility for uint256;
 	
 	enum FundState { NotReady, TeamWithdraw, Refunding, Closed }
 	enum ProposalType { TapFromTokenHolder, TapFromCompany, Refund }
@@ -26,35 +29,35 @@ contract StrayFund is CrowdsaleFund {
 		mapping (address => bool) voted;
 		bool isPassed;
 		bool isFinialized;
-		uint256 tapRate;
+		uint256 targetWei;
 	}
 	
-	struct TappedWithdrawPlan {
+	struct BudgetPlan {
 	    uint256 proposalId;
-	    uint256 limitInWei;
+	    uint256 budgetInWei;
 	    uint256 withdrawnWei;
-	    uint256 openingTime;
-	    uint256 closingTime;
+	    uint256 startTime;
+	    uint256 endTime;
+	    uint256 officalVotingTime;
 	}
 	
 	address public teamWallet;
 	FundState public fundState;
 	
-	ERC20Basic public token;
+	StrayToken public token;
 	
 	Proposal[] public proposals;
-	TappedWithdrawPlan[] public tappedWithdrawPlans;
+	BudgetPlan[] public budgetPlans;
 	
 	uint256 lastRefundProposalId = NON_UINT256;
-	uint256 currentWithdrawPlanId;
+	uint256 currentBudgetPlanId;
 	
 	uint256 public MIN_WITHDRAW_WEI = 1 ether;
 	
-	uint256 public FIRST_WITHDRAW_RATE = 10;
-	uint256 public WITHDRAW_DURATION_PER_PLAN = 90 days;
+	uint256 public FIRST_WITHDRAW_RATE = 20;
 	uint256 public VOTING_DURATION = 1 weeks;
+	uint8 public OFFICAL_VOTING_DAY_OF_MONTH = 23;
 	uint256 public REFUND_LOCK_DURATION = 30 days;
-	uint256 public REFUND_PROPOSAL_LOCK_DURATION = 90 days;
 	
 	uint256 public refundLockDate = 0;
 	
@@ -63,14 +66,15 @@ contract StrayFund is CrowdsaleFund {
 	event Closed();
 	
 	event TapVoted(address indexed voter, bool isSupported);
-	event TapProposalAdded(uint256 openingTime, uint256 closingTime, uint256 targetRate);
-	event TapProposalClosed(uint256 closingTime, uint256 targetRate, bool isPassed);
+	event TapProposalAdded(uint256 openingTime, uint256 closingTime, uint256 targetWei);
+	event TapProposalClosed(uint256 closingTime, uint256 targetWei, bool isPassed);
 	
 	event RefundVoted(address indexed voter, bool isSupported);
 	event RefundProposalAdded(uint256 openingTime, uint256 closingTime);
 	event RefundProposalClosed(uint256 closingTime, bool isPassed);
 	
 	event Withdrew(uint256 weiAmount);
+	event Refund(address indexed holder, uint256 amount);
 	
 	modifier onlyTokenHolders {
 		require(token.balanceOf(msg.sender) != 0);
@@ -88,7 +92,7 @@ contract StrayFund is CrowdsaleFund {
 		
 		teamWallet = _teamWallet;
 		fundState = FundState.NotReady;
-		token = ERC20Basic(_token);
+		token = StrayToken(_token);
 	}
 	
 	function enableTeamWithdraw() onlyOwner public {
@@ -96,15 +100,16 @@ contract StrayFund is CrowdsaleFund {
 		fundState = FundState.TeamWithdraw;
 		emit TeamWithdrawEnabled();
 		
-		tappedWithdrawPlans.length++;
-		TappedWithdrawPlan storage plan = tappedWithdrawPlans[0];
+		budgetPlans.length++;
+		BudgetPlan storage plan = budgetPlans[0];
+		
 	    plan.proposalId = NON_UINT256;
-	    plan.limitInWei = address(this).balance.mul(FIRST_WITHDRAW_RATE).div(100);
+	    plan.budgetInWei = address(this).balance.mul(FIRST_WITHDRAW_RATE).div(100);
 	    plan.withdrawnWei = 0;
-	    plan.openingTime = now;
-	    plan.closingTime = plan.openingTime + WITHDRAW_DURATION_PER_PLAN;
+	    plan.startTime = now;
+	    (plan.endTime, plan.officalVotingTime) = _budgetEndAndOfficalVotingTime(now);
 	    
-	    currentWithdrawPlanId = 0;
+	    currentBudgetPlanId = 0;
 	}
 	
 	function close() onlyOwner inWithdrawState public {
@@ -125,8 +130,8 @@ contract StrayFund is CrowdsaleFund {
 	    }
 	}
 	
-	function isNextWithdrawPlanMade() inWithdrawState public view returns (bool) {
-	    return currentWithdrawPlanId != tappedWithdrawPlans.length - 1;
+	function isNextBudgetPlanMade() inWithdrawState public view returns (bool) {
+	    return currentBudgetPlanId != budgetPlans.length - 1;
 	}
 	
 	function tryFinializeLastProposal() inWithdrawState public {
@@ -142,106 +147,83 @@ contract StrayFund is CrowdsaleFund {
 	            if (p.proposalType == ProposalType.Refund) {
 	                _enableRefunds();
 	            } else {
-	                _makeWithdrawPlan(p, id);
+	                _makeBudgetPlan(p, id);
 	            }
 	        }
 	    }
 	}
 	
-	function nextTapFromTokenHoldersProposalTime() 
-	    public 
-	    view 
-	    returns (uint256 startTime, uint256 endTime) 
-	{
-	    uint256 id = 0;
-	    if (isNextWithdrawPlanMade()) {
-	        id = tappedWithdrawPlans.length - 1;
-	    } else {
-	        id = currentWithdrawPlanId;
-	    }
-	    
-	    TappedWithdrawPlan storage p = tappedWithdrawPlans[id];
-	    startTime = p.openingTime;
-	    endTime = p.closingTime - VOTING_DURATION;
-	}
-	
-	function nextTapFromCompanyProposalStartTime() 
-	    public 
-	    view 
-	    returns (uint256) 
-	{
-	    if (isNextWithdrawPlanMade()) {
-	        return NON_UINT256;
-	    } else {
-	        TappedWithdrawPlan storage plan = tappedWithdrawPlans[currentWithdrawPlanId];
-	        return plan.closingTime - VOTING_DURATION;
-	    }
-	}
-	
-	function nextRefundProposalStartTime() 
-	    public 
-	    view 
-	    returns (uint256) 
-	{
-	    if (lastRefundProposalId >= proposals.length) {
-	        return now;
-	    } else {
-	        Proposal storage p = proposals[lastRefundProposalId];
-	        return p.closingTime + REFUND_PROPOSAL_LOCK_DURATION;
-	    }
-	}
-	
-	function newTapProposalFromTokenHolders(uint256 targetTapRate)
+	function newTapProposalFromTokenHolders(uint256 _targetWei)
 	    onlyTokenHolders 
 	    inWithdrawState 
 	    public
 	{
+	    // Sponsor cannot be stuff of company.
 	    require(msg.sender != owner);
 	    require(msg.sender != teamWallet);
 	    
+	    // Check the last result.
 	    tryFinializeLastProposal();
 	    require(fundState == FundState.TeamWithdraw);
 	    
-	    require(!isNextWithdrawPlanMade());
+	    // Proposal is disable when the budget plan has been made.
+	    require(!isNextBudgetPlanMade());
+	    
+	    // Proposal voting is exclusive.
 	    require(!isThereAnOnGoingProposal());
 	    
-	    uint256 startTime;
-	    uint256 endTime;
-	    (startTime, endTime) = nextTapFromTokenHoldersProposalTime();
-		require(now <= endTime && now >= startTime);
+	    // Validation of time restriction.
+	    BudgetPlan storage b = budgetPlans[currentBudgetPlanId];
+		require(now <= b.officalVotingTime && now >= b.startTime);
 		
-		uint256 amount = address(this).balance.mul(targetTapRate).div(100);
-		require(amount >= MIN_WITHDRAW_WEI);
+		// Sponsor is not allowed to propose repeatly in the same budget period.
+		require(!_hasProposed(msg.sender, ProposalType.TapFromTokenHolder));
 		
-		_newTapProposal(ProposalType.TapFromTokenHolder, targetTapRate);
+		// The minimum wei requirement.
+		require(_targetWei >= MIN_WITHDRAW_WEI);
+		
+		// Create a new proposal.
+		_newTapProposal(ProposalType.TapFromTokenHolder, _targetWei);
 	}
 	
-	function newTapProposalFromCompany(uint256 targetTapRate)
+	function newTapProposalFromCompany(uint256 _targetWei)
 	    onlyOwner 
 	    inWithdrawState 
 	    public
 	{
+	    // Check the last result.
 	    tryFinializeLastProposal();
 	    require(fundState == FundState.TeamWithdraw);
 	    
-	    require(!isNextWithdrawPlanMade());
+	    // Proposal is disable when the budget plan has been made.
+	    require(!isNextBudgetPlanMade());
+	    
+	    // Proposal voting is exclusive.
 	    require(!isThereAnOnGoingProposal());
 	    
-	    uint256 startTime = nextTapFromCompanyProposalStartTime();
-		require(now >= startTime);
+	    // Validation of time restriction.
+	    BudgetPlan storage b = budgetPlans[currentBudgetPlanId];
+		require(now >= b.officalVotingTime);
 		
-		uint256 amount = address(this).balance.mul(targetTapRate).div(100);
-		require(amount >= MIN_WITHDRAW_WEI);
+		// The minimum wei requirement.
+		require(_targetWei >= MIN_WITHDRAW_WEI);
 		
-		_newTapProposal(ProposalType.TapFromCompany, targetTapRate);
+		// Create a new proposal.
+		_newTapProposal(ProposalType.TapFromCompany, _targetWei);
 	}
 	
 	function newRefundProposal() onlyTokenHolders inWithdrawState public {
+	    // Check the last result.
 	    tryFinializeLastProposal();
 	    require(fundState == FundState.TeamWithdraw);
-	    require(!isThereAnOnGoingProposal());
-	    require(now >= nextRefundProposalStartTime());
 	    
+	    // Proposal voting is exclusive.
+	    require(!isThereAnOnGoingProposal());
+	    
+	    // Sponsor is not allowed to propose repeatly in the same budget period.
+	    require(!_hasProposed(msg.sender, ProposalType.Refund));
+	    
+	    // Create proposals.
 		uint256 id = proposals.length++;
 		Proposal storage p = proposals[id];
 		p.proposalType = ProposalType.Refund;
@@ -251,6 +233,7 @@ contract StrayFund is CrowdsaleFund {
 		p.isPassed = false;
 		p.isFinialized = false;
 		
+		// Signal the event.
 		emit RefundProposalAdded(p.openingTime, p.closingTime);
 	}
 	
@@ -259,18 +242,22 @@ contract StrayFund is CrowdsaleFund {
 	    inWithdrawState
 	    public
 	{
+	    // Check the last result.
 	    tryFinializeLastProposal();
 		require(isThereAnOnGoingProposal());
 		
+		// Check the ongoing proposal's type and reject the voted address.
 		Proposal storage p = proposals[proposals.length - 1];
 		require(p.proposalType != ProposalType.Refund);
 		require(true != p.voted[msg.sender]);
 		
+		// Record the vote.
 		uint256 voteId = p.votes.length++;
 		p.votes[voteId].tokeHolder = msg.sender;
 		p.votes[voteId].inSupport = supportsProposal;
 		p.voted[msg.sender] = true;
 		
+		// Signal the event.
 		emit TapVoted(msg.sender, supportsProposal);
 	}
 	
@@ -279,73 +266,103 @@ contract StrayFund is CrowdsaleFund {
 	    inWithdrawState
 	    public
 	{
+	    // Check the last result.
 	    tryFinializeLastProposal();
 		require(isThereAnOnGoingProposal());
 		
+		// Check the ongoing proposal's type and reject the voted address.
 		Proposal storage p = proposals[proposals.length - 1];
 		require(p.proposalType == ProposalType.Refund);
 		require(true != p.voted[msg.sender]);
 		
+		// Record the vote.
 		uint256 voteId = p.votes.length++;
 		p.votes[voteId].tokeHolder = msg.sender;
 		p.votes[voteId].inSupport = supportsProposal;
 		p.voted[msg.sender] = true;
 		
+		// Signal the event.
 		emit RefundVoted(msg.sender, supportsProposal);
 	}
 	
-	function withdraw(uint256 amount) onlyOwner inWithdrawState public {
+	function withdraw(uint256 _amount) onlyOwner inWithdrawState public {
+	    // Check the last result.
 	    tryFinializeLastProposal();
+	    require(fundState == FundState.TeamWithdraw);
 	    
-	    TappedWithdrawPlan storage currentPlan = tappedWithdrawPlans[currentWithdrawPlanId];
-	    if (now > currentPlan.closingTime) {
-	        require(isNextWithdrawPlanMade());
-	        ++currentWithdrawPlanId;
-	        
-	       TappedWithdrawPlan storage plan = tappedWithdrawPlans[currentWithdrawPlanId];
-	       require(now <= plan.closingTime);
-	       require(amount <= plan.limitInWei - plan.withdrawnWei);
-	       
-	       plan.withdrawnWei += amount;
-	       teamWallet.transfer(amount);
-	       emit Withdrew(amount);
-	    } else {
-	        require(amount <= currentPlan.limitInWei - currentPlan.withdrawnWei);
-	        
-	        currentPlan.withdrawnWei += amount;
-	        teamWallet.transfer(amount);
-	        emit Withdrew(amount);
+	    // Try to update the budget plans.
+	    BudgetPlan storage currentPlan = budgetPlans[currentBudgetPlanId];
+	    if (now > currentPlan.endTime) {
+	        require(isNextBudgetPlanMade());
+	        ++currentBudgetPlanId;
 	    }
+	    
+	    // Withdraw the weis.
+	    _withdraw(_amount);
 	}
 	
 	function withdrawOnNoAvailablePlan() onlyOwner inWithdrawState public {
 	    require(address(this).balance >= MIN_WITHDRAW_WEI);
 	    
+	    // Check the last result.
 	    tryFinializeLastProposal();
+	    require(fundState == FundState.TeamWithdraw);
 	    
+	    // Check if someone proposed a tap voting.
 	    require(!_isThereAnOnGoingTapProposal());
 	    
-	    TappedWithdrawPlan storage currentPlan = tappedWithdrawPlans[currentWithdrawPlanId];
-	    require(now > currentPlan.closingTime);
+	    // There is no passed budget plan.
+	    require(!isNextBudgetPlanMade());
 	    
-	    uint256 planId = tappedWithdrawPlans.length++;
-	    TappedWithdrawPlan storage plan = tappedWithdrawPlans[planId];
+	    // Validate the time.
+	    BudgetPlan storage currentPlan = budgetPlans[currentBudgetPlanId];
+	    require(now > currentPlan.endTime);
+	    
+	    // Create plan.
+	    uint256 planId = budgetPlans.length++;
+	    BudgetPlan storage plan = budgetPlans[planId];
 	    plan.proposalId = NON_UINT256;
-	    plan.limitInWei = MIN_WITHDRAW_WEI;
+	    plan.budgetInWei = MIN_WITHDRAW_WEI;
 	    plan.withdrawnWei = MIN_WITHDRAW_WEI;
-	    plan.openingTime = now;
-	    plan.closingTime = now + WITHDRAW_DURATION_PER_PLAN; 
+	    plan.startTime = now;
+	    (plan.endTime, plan.officalVotingTime) = _budgetEndAndOfficalVotingTime(now);
 	    
-	    teamWallet.transfer(MIN_WITHDRAW_WEI);
-	    emit Withdrew(MIN_WITHDRAW_WEI);
+	    ++currentBudgetPlanId;
+	    
+	    // Withdraw the weis.
+	    _withdraw(MIN_WITHDRAW_WEI);
 	}
 	
 	function refund() onlyTokenHolders public {
+	    // Check the state.
 		require(fundState == FundState.Refunding);
+		
+		// Validate the time.
 		require(now > refundLockDate + REFUND_LOCK_DURATION);
 		
-		uint256 amount = address(this).balance.mul(token.totalSupply()).div(token.balanceOf(msg.sender));
+		// Calculate the transfering wei and burn all the token of the refunder.
+		uint256 amount = address(this).balance.mul(token.balanceOf(msg.sender)).div(token.totalSupply());
+		token.burnAll(msg.sender);
+		
+		// Signal the event.
 		msg.sender.transfer(amount);
+	}
+	
+	function _withdraw(uint256 _amount) internal {
+	    BudgetPlan storage plan = budgetPlans[currentBudgetPlanId];
+	    
+	    // Validate the time.
+	    require(now <= plan.endTime);
+	    
+	    // Check the remaining wei.
+	    require(_amount + plan.withdrawnWei <= plan.budgetInWei);
+	       
+	    // Transfer the wei.
+	    plan.withdrawnWei += _amount;
+	    teamWallet.transfer(_amount);
+	    
+	    // Signal the event.
+	    emit Withdrew(_amount);
 	}
 	
 	function _countVotes(Proposal storage p)
@@ -372,7 +389,7 @@ contract StrayFund is CrowdsaleFund {
 		p.isFinialized = true;
 		
 		emit TapProposalClosed(p.closingTime
-			, p.tapRate
+			, p.targetWei
 			, p.isPassed);
 		
 		return p.isPassed;
@@ -385,43 +402,43 @@ contract StrayFund is CrowdsaleFund {
 		refundLockDate = now;
 	}
 	
-	function _makeWithdrawPlan(Proposal storage p, uint256 proposalId) 
+	function _makeBudgetPlan(Proposal storage p, uint256 proposalId) 
 	    internal
 	{
 	    require(p.proposalType != ProposalType.Refund);
 	    require(p.isFinialized);
 	    require(p.isPassed);
-	    require(currentWithdrawPlanId + 1 == tappedWithdrawPlans.length);
+	    require(!isNextBudgetPlanMade());
 	    
-	    uint256 planId = tappedWithdrawPlans.length++;
-	    TappedWithdrawPlan storage plan = tappedWithdrawPlans[planId];
+	    uint256 planId = budgetPlans.length++;
+	    BudgetPlan storage plan = budgetPlans[planId];
 	    plan.proposalId = proposalId;
-	    plan.limitInWei = address(this).balance.mul(p.tapRate).div(100);
+	    plan.budgetInWei = p.targetWei;
 	    plan.withdrawnWei = 0;
 	    
-	    if (p.proposalType == ProposalType.TapFromTokenHolder) {
-	        plan.openingTime = tappedWithdrawPlans[currentWithdrawPlanId].closingTime;
+	    if (now > budgetPlans[currentBudgetPlanId].endTime) {
+	        plan.startTime = now;
+	        (plan.endTime, plan.officalVotingTime) = _budgetEndAndOfficalVotingTime(now);
+	        ++currentBudgetPlanId;
 	    } else {
-	        plan.openingTime = now;
+	        (plan.startTime, plan.endTime, plan.officalVotingTime) = _nextBudgetStartAndEndAndOfficalVotingTime();
 	    }
-	    
-	    plan.closingTime = plan.openingTime + WITHDRAW_DURATION_PER_PLAN;
 	}
 	
-	function _newTapProposal(ProposalType proposalType, uint256 targetTapRate) internal {
+	function _newTapProposal(ProposalType _proposalType, uint256 _targetWei) internal {
 	    uint256 id = proposals.length++;
         Proposal storage p = proposals[id];
-        p.proposalType = proposalType;
+        p.proposalType = _proposalType;
 		p.sponsor = msg.sender;
 		p.openingTime = now;
 		p.closingTime = now + 1 weeks;
 		p.isPassed = false;
 		p.isFinialized = false;
-		p.tapRate = targetTapRate;
+		p.targetWei = _targetWei;
 		
 		emit TapProposalAdded(p.openingTime
 			, p.closingTime
-			, p.tapRate);
+			, p.targetWei);
 	}
 	
 	function _isThereAnOnGoingTapProposal() internal view returns (bool) {
@@ -433,6 +450,116 @@ contract StrayFund is CrowdsaleFund {
 	    }
 	}
 	
+	function _budgetEndAndOfficalVotingTime(uint256 _startTime)
+	    view
+	    internal
+	    returns (uint256, uint256)
+	{
+	    // Decompose to datetime.
+        uint32 year;
+        uint8 month;
+        uint8 mday;
+        uint8 hour;
+        uint8 minute;
+        uint8 second;
+        (year, month, mday, hour, minute, second) = _startTime.toGMT();
+        
+        // Calculate the next end time of budget period.
+        month = ((month - 1) / 3 + 1) * 3 + 1;
+        if (month > 12) {
+            month -= 12;
+            year += 1;
+        }
+        
+        mday = 1;
+        hour = 0;
+        minute = 0;
+        second = 0;
+        
+        uint256 end = DateTimeUtility.toUnixtime(year, month, mday, hour, minute, second) - 1;
+     
+         // Calculate the offical voting time of the budget period.
+        mday = OFFICAL_VOTING_DAY_OF_MONTH;
+        hour = 0;
+        minute = 0;
+        second = 0;
+        
+        uint256 votingTime = DateTimeUtility.toUnixtime(year, month, mday, hour, minute, second);
+        
+        return (end, votingTime);
+	}
+    
+    function _nextBudgetStartAndEndAndOfficalVotingTime() 
+        view 
+        internal 
+        returns (uint256, uint256, uint256)
+    {
+        // Decompose to datetime.
+        uint32 year;
+        uint8 month;
+        uint8 mday;
+        uint8 hour;
+        uint8 minute;
+        uint8 second;
+        (year, month, mday, hour, minute, second) = now.toGMT();
+        
+        // Calculate the next start time of budget period. (1/1, 4/1, 7/1, 10/1)
+        month = ((month - 1) / 3 + 1) * 3 + 1;
+        if (month > 12) {
+            month -= 12;
+            year += 1;
+        }
+        
+        mday = 1;
+        hour = 0;
+        minute = 0;
+        second = 0;
+        
+        uint256 start = DateTimeUtility.toUnixtime(year, month, mday, hour, minute, second);
+        
+        // Calculate the next end time of budget period.
+        month = ((month - 1) / 3 + 1) * 3 + 1;
+        if (month > 12) {
+            month -= 12;
+            year += 1;
+        }
+        
+        uint256 end = DateTimeUtility.toUnixtime(year, month, mday, hour, minute, second) - 1;
+        
+        // Calculate the offical voting time of the budget period.
+        mday = OFFICAL_VOTING_DAY_OF_MONTH;
+        hour = 0;
+        minute = 0;
+        second = 0;
+        
+        uint256 votingTime = DateTimeUtility.toUnixtime(year, month, mday, hour, minute, second);
+        
+        return (start, end, votingTime);
+    } 
+    
+    function _hasProposed(address _sponsor, ProposalType proposalType)
+        internal
+        view
+        returns (bool)
+    {
+        if (proposals.length == 0) {
+            return false;
+        } else {
+            BudgetPlan storage b = budgetPlans[currentBudgetPlanId];
+            for (uint256 i = proposals.length - 1; i != 0; --i) {
+                Proposal storage p = proposals[i];
+                if (p.openingTime < b.startTime) {
+                    return false;
+                } else  if (p.openingTime <= b.endTime 
+                            && p.sponsor == _sponsor 
+                            && p.proposalType == proposalType) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    
 	function _processClosed() internal {
 	    super._processClosed();
 	    enableTeamWithdraw();

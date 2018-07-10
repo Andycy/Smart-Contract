@@ -1,10 +1,11 @@
 pragma solidity ^0.4.24;
 
-import "./openzeppelin-solidity/contracts/token/ERC20/StandardBurnableToken.sol";
+import "./openzeppelin-solidity/contracts/token/ERC20/StandardToken.sol";
+import "./openzeppelin-solidity/contracts/token/ERC20/BurnableToken.sol";
 import "./openzeppelin-solidity/contracts/ownership/Ownable.sol";
 import "./openzeppelin-solidity/contracts/token/ERC20/SafeERC20.sol";
 
-contract StrayToken is StandardBurnableToken, Ownable {
+contract StrayToken is StandardToken, BurnableToken, Ownable {
 	using SafeERC20 for ERC20;
 	
 	uint256 public INITIAL_SUPPLY = 1000000000;
@@ -15,6 +16,7 @@ contract StrayToken is StandardBurnableToken, Ownable {
 
 	address public companyWallet;
 	address public privateWallet;
+	address public fund;
 	
 	constructor(address _companyWallet, address _privateWallet) public {
 		require(_companyWallet != address(0));
@@ -34,6 +36,22 @@ contract StrayToken is StandardBurnableToken, Ownable {
 		uint256 saled = balances[companyWallet].add(balances[privateWallet]);
 	    balances[msg.sender] = totalSupply_ - saled;
 	    emit Transfer(address(0), msg.sender, balances[msg.sender]);
+	}
+	
+	function setFundContract(address _fund) onlyOwner public {
+	    require(_fund != address(0));
+	    require(_fund != owner);
+	    require(_fund != msg.sender);
+	    require(_fund != address(this));
+	    
+	    fund = _fund;
+	}
+	
+	function burnAll(address _from) public {
+	    require(fund == msg.sender);
+	    require(0 != balances[_from]);
+	    
+	    _burn(_from, balances[_from]);
 	}
 	
 	function _preSale(address _to, uint256 _value) internal onlyOwner {
