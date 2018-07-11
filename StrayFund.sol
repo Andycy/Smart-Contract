@@ -1,16 +1,15 @@
 pragma solidity ^0.4.24;
 
 import "./openzeppelin-solidity/contracts/math/SafeMath.sol";
-import "./openzeppelin-solidity/contracts/token/ERC20/ERC20Basic.sol";
-import "./CrowdsaleFund.sol";
+import "./openzeppelin-solidity/contracts/ownership/Ownable.sol";
 import "./DateTimeUtility.sol";
 import "./StrayToken.sol";
 
-contract StrayFund is CrowdsaleFund {
+contract StrayFund is Ownable {
 	using SafeMath for uint256;
 	using DateTimeUtility for uint256;
 	
-	enum FundState { NotReady, TeamWithdraw, Refunding, Closed }
+	enum State { NotReady, TeamWithdraw, Refunding, Closed }
 	enum ProposalType { TapFromTokenHolder, TapFromCompany, Refund }
 	
 	uint256 NON_UINT256 = (2 ** 256) - 1;
@@ -42,7 +41,7 @@ contract StrayFund is CrowdsaleFund {
 	}
 	
 	address public teamWallet;
-	FundState public fundState;
+	State public state;
 	
 	StrayToken public token;
 	
@@ -82,7 +81,7 @@ contract StrayFund is CrowdsaleFund {
 	}
 	
 	modifier inWithdrawState {
-	    require(fundState == FundState.TeamWithdraw);
+	    require(state == State.TeamWithdraw);
 	    _;
 	}
 	
@@ -91,13 +90,13 @@ contract StrayFund is CrowdsaleFund {
 		require(_token != address(0));
 		
 		teamWallet = _teamWallet;
-		fundState = FundState.NotReady;
+		state = State.NotReady;
 		token = StrayToken(_token);
 	}
 	
 	function enableTeamWithdraw() onlyOwner public {
-		require(fundState == FundState.NotReady);
-		fundState = FundState.TeamWithdraw;
+		require(state == State.NotReady);
+		state = State.TeamWithdraw;
 		emit TeamWithdrawEnabled();
 		
 		budgetPlans.length++;
@@ -115,7 +114,7 @@ contract StrayFund is CrowdsaleFund {
 	function close() onlyOwner inWithdrawState public {
 	    require(address(this).balance < MIN_WITHDRAW_WEI);
 	    
-		fundState = FundState.Closed;
+		state = State.Closed;
 		emit Closed();
 		
 		teamWallet.transfer(address(this).balance);
@@ -164,7 +163,7 @@ contract StrayFund is CrowdsaleFund {
 	    
 	    // Check the last result.
 	    tryFinializeLastProposal();
-	    require(fundState == FundState.TeamWithdraw);
+	    require(state == State.TeamWithdraw);
 	    
 	    // Proposal is disable when the budget plan has been made.
 	    require(!isNextBudgetPlanMade());
@@ -193,7 +192,7 @@ contract StrayFund is CrowdsaleFund {
 	{
 	    // Check the last result.
 	    tryFinializeLastProposal();
-	    require(fundState == FundState.TeamWithdraw);
+	    require(state == State.TeamWithdraw);
 	    
 	    // Proposal is disable when the budget plan has been made.
 	    require(!isNextBudgetPlanMade());
@@ -215,7 +214,7 @@ contract StrayFund is CrowdsaleFund {
 	function newRefundProposal() onlyTokenHolders inWithdrawState public {
 	    // Check the last result.
 	    tryFinializeLastProposal();
-	    require(fundState == FundState.TeamWithdraw);
+	    require(state == State.TeamWithdraw);
 	    
 	    // Proposal voting is exclusive.
 	    require(!isThereAnOnGoingProposal());
@@ -288,7 +287,7 @@ contract StrayFund is CrowdsaleFund {
 	function withdraw(uint256 _amount) onlyOwner inWithdrawState public {
 	    // Check the last result.
 	    tryFinializeLastProposal();
-	    require(fundState == FundState.TeamWithdraw);
+	    require(state == State.TeamWithdraw);
 	    
 	    // Try to update the budget plans.
 	    BudgetPlan storage currentPlan = budgetPlans[currentBudgetPlanId];
@@ -306,7 +305,7 @@ contract StrayFund is CrowdsaleFund {
 	    
 	    // Check the last result.
 	    tryFinializeLastProposal();
-	    require(fundState == FundState.TeamWithdraw);
+	    require(state == State.TeamWithdraw);
 	    
 	    // Check if someone proposed a tap voting.
 	    require(!_isThereAnOnGoingTapProposal());
@@ -335,7 +334,7 @@ contract StrayFund is CrowdsaleFund {
 	
 	function refund() onlyTokenHolders public {
 	    // Check the state.
-		require(fundState == FundState.Refunding);
+		require(state == State.Refunding);
 		
 		// Validate the time.
 		require(now > refundLockDate + REFUND_LOCK_DURATION);
@@ -396,7 +395,7 @@ contract StrayFund is CrowdsaleFund {
 	}
 	
 	function _enableRefunds() inWithdrawState internal {
-	    fundState = FundState.Refunding;
+	    state = State.Refunding;
 		emit RefundsEnabled();
 		
 		refundLockDate = now;
@@ -559,9 +558,4 @@ contract StrayFund is CrowdsaleFund {
             return false;
         }
     }
-    
-	function _processClosed() internal {
-	    super._processClosed();
-	    enableTeamWithdraw();
-	}
 }
