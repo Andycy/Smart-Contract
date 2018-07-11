@@ -51,7 +51,9 @@ contract StrayCrowdsale is FinalizableCrowdsale {
     
     // Refund vault used to hold funds while crowdsale is running
     RefundVault public vault;
-  
+    
+    // Stray fund contract.
+    StrayFund public fund;
     
      /* debug only
       constructor() 
@@ -101,7 +103,6 @@ contract StrayCrowdsale is FinalizableCrowdsale {
         
         // Create the token.
         strayToken = StrayToken(token);
-        strayToken.transferOwnership(msg.sender);
         
         // Set soft cap and hard cap.
         require(_softCapInUSD > 0 && _softCapInUSD <= _hardCapInUSD);
@@ -111,8 +112,15 @@ contract StrayCrowdsale is FinalizableCrowdsale {
         
         require(strayToken.balanceOf(address(this)) >= hardCapInToken);
         
+        // Create thr fund contract.
+        fund = new StrayFund(msg.sender, address(strayToken));
+        
+        // Set fund contract to straytoken.
+        strayToken.setFundContract(address(fund));
+        strayToken.transferOwnership(msg.sender);
+        
         // Create the refund vault.
-        vault = new RefundVault(wallet);
+        vault = new RefundVault(address(fund));
         
         // Calculate mininum purchase token.
         mininumPurchaseTokenQuantity = exchangeRateUSDToToken * mininumContributeUSD 
@@ -223,6 +231,8 @@ contract StrayCrowdsale is FinalizableCrowdsale {
     function finalization() internal {
         if (softCapReached()) {
             vault.close();
+            fund.enableTeamWithdraw();
+            fund.transferOwnership(owner);
         } else {
             vault.enableRefunds();
         }

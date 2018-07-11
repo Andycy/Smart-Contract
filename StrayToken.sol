@@ -52,8 +52,8 @@ contract StrayToken is StandardToken, BurnableToken, Ownable {
 	 */
 	function setFundContract(address _fund) onlyOwner public {
 	    require(_fund != address(0));
-	    require(_fund != owner);
-	    require(_fund != msg.sender);
+	    //require(_fund != owner);
+	    //require(_fund != msg.sender);
 	    require(_fund != address(this));
 	    
 	    fund = _fund;

@@ -5,59 +5,98 @@ import "./openzeppelin-solidity/contracts/ownership/Ownable.sol";
 import "./DateTimeUtility.sol";
 import "./StrayToken.sol";
 
+/**
+ * @title StrayFund
+ * @dev The DAICO managed fund.
+ */
 contract StrayFund is Ownable {
 	using SafeMath for uint256;
 	using DateTimeUtility for uint256;
 	
-	enum State { NotReady, TeamWithdraw, Refunding, Closed }
-	enum ProposalType { TapFromTokenHolder, TapFromCompany, Refund }
+    // The fund state.
+	enum State {
+	    NotReady       // The fund is not ready for any operations.
+	    , TeamWithdraw // The fund can be withdrawn and voting proposals.
+	    , Refunding    // The fund only can be refund..
+	    , Closed       // The fund is closed.
+	}
 	
+
+	// @dev Proposal type for voting.
+	enum ProposalType { 
+	    Tap          // Tap proposal sponsored by token holder out of company.
+	    , OfficalTap // Tap proposal sponsored by company.
+	    , Refund     // Refund proposal.
+	}
+	
+	// A special number indicates that no valid id.
 	uint256 NON_UINT256 = (2 ** 256) - 1;
 	
+	// Data type represent a vote.
 	struct Vote {
-		address tokeHolder;
-		bool inSupport;
+		address tokeHolder; // Voter address.
+		bool inSupport;     // Support or not.
 	}
 	
-	struct Proposal {
-	    ProposalType proposalType;
-	    address sponsor;
-	    uint256 openingTime;
-	    uint256 closingTime;
-	    Vote[] votes;
-		mapping (address => bool) voted;
-		bool isPassed;
-		bool isFinialized;
-		uint256 targetWei;
+	// Voting proposal.
+	struct Proposal {              
+	    ProposalType proposalType; // Proposal type.
+	    address sponsor;           // Who proposed this vote.
+	    uint256 openingTime;       // Opening time of the voting.
+	    uint256 closingTime;       // Closing time of the voting.
+	    Vote[] votes;              // All votes.
+		mapping (address => bool) voted; // Prevent duplicate vote.
+		bool isPassed;             // Final result.
+		bool isFinialized;         // Proposal state.
+		uint256 targetWei;         // Tap proposal target.
 	}
 	
+	// Budget plan stands a budget period for the team to withdraw the funds.
 	struct BudgetPlan {
-	    uint256 proposalId;
-	    uint256 budgetInWei;
-	    uint256 withdrawnWei;
-	    uint256 startTime;
-	    uint256 endTime;
-	    uint256 officalVotingTime;
+	    uint256 proposalId;       // The tap proposal id.
+	    uint256 budgetInWei;      // Budget in wei.
+	    uint256 withdrawnWei;     // Withdrawn wei.
+	    uint256 startTime;        // Start time of this budget plan. 
+	    uint256 endTime;          // End time of this budget plan.
+	    uint256 officalVotingTime; // The offical tap voting time in this period.
 	}
 	
+	// Team wallet to receive the budget.
 	address public teamWallet;
+	
+	// Fund state.
 	State public state;
 	
+	// Stary Token.
 	StrayToken public token;
 	
+	// Proposal history.
 	Proposal[] public proposals;
+	
+	// Budget plan history.
 	BudgetPlan[] public budgetPlans;
 	
-	uint256 lastRefundProposalId = NON_UINT256;
+	// Current budget plan id.
 	uint256 currentBudgetPlanId;
 	
+	// The mininum budget.
 	uint256 public MIN_WITHDRAW_WEI = 1 ether;
 	
+	// The fist withdraw rate when the crowdsale was successed.
 	uint256 public FIRST_WITHDRAW_RATE = 20;
-	uint256 public VOTING_DURATION = 1 weeks;
-	uint8 public OFFICAL_VOTING_DAY_OF_MONTH = 23;
-	uint256 public REFUND_LOCK_DURATION = 30 days;
 	
+	// The voting duration.
+	//uint256 public VOTING_DURATION = 1 weeks;
+	uint256 public VOTING_DURATION = 1 minutes;
+	
+	// Offical voting day of the last month of budget period. 
+	uint8 public OFFICAL_VOTING_DAY_OF_MONTH = 23;
+	
+	// Refund lock duration.
+	//uint256 public REFUND_LOCK_DURATION = 30 days;
+	uint256 public REFUND_LOCK_DURATION = 30 seconds;
+	
+	// Refund lock date.
 	uint256 public refundLockDate = 0;
 	
 	event TeamWithdrawEnabled();
@@ -85,7 +124,25 @@ contract StrayFund is Ownable {
 	    _;
 	}
 	
-	constructor(address _teamWallet, address _token) public {
+	/*
+		constructor() public {
+	    address _teamWallet = msg.sender;
+	    StrayToken t = new StrayToken(0x14723a09acff6d2a60dcdf7aa4aff308fddc160c
+	        , 0x4b0897b0513fdc7c541b6d9d7e929c4e5364d2db);
+	    t.transfer(msg.sender, t.balanceOf(address(this)).mul(8).div(10));
+	    t.transfer(0x583031d1113ad414f02576bd6afabfb302140225, t.balanceOf(address(this)));
+	    t.setFundContract(address(this));
+	    t.transferOwnership(msg.sender);
+	    
+	    address _token = address(t);
+
+	}
+	*/
+	/**
+	 * @param _teamWallet The wallet which receives the funds.
+	 * @param _token Stray token address.
+	 */
+    constructor(address _teamWallet, address _token) public {
 		require(_teamWallet != address(0));
 		require(_token != address(0));
 		
@@ -94,6 +151,9 @@ contract StrayFund is Ownable {
 		token = StrayToken(_token);
 	}
 	
+	/**
+	 * @dev Enable the TeamWithdraw state.
+	 */
 	function enableTeamWithdraw() onlyOwner public {
 		require(state == State.NotReady);
 		state = State.TeamWithdraw;
@@ -111,6 +171,9 @@ contract StrayFund is Ownable {
 	    currentBudgetPlanId = 0;
 	}
 	
+	/**
+	 * @dev Close the fund.
+	 */
 	function close() onlyOwner inWithdrawState public {
 	    require(address(this).balance < MIN_WITHDRAW_WEI);
 	    
@@ -120,8 +183,11 @@ contract StrayFund is Ownable {
 		teamWallet.transfer(address(this).balance);
 	}
 	
-	function isThereAnOnGoingProposal() inWithdrawState public view returns (bool) {
-	    if (proposals.length == 0) {
+	/**
+	 * @dev Check if there is an ongoing proposal.
+	 */
+	function isThereAnOnGoingProposal() public view returns (bool) {
+	    if (proposals.length == 0 || state != State.TeamWithdraw) {
 	        return false;
 	    } else {
 	        Proposal storage p = proposals[proposals.length - 1];
@@ -129,10 +195,34 @@ contract StrayFund is Ownable {
 	    }
 	}
 	
-	function isNextBudgetPlanMade() inWithdrawState public view returns (bool) {
-	    return currentBudgetPlanId != budgetPlans.length - 1;
+	/**
+	 * @dev Check if next budget period plan has been made.
+	 */
+	function isNextBudgetPlanMade() public view returns (bool) {
+	    if (state != State.TeamWithdraw) {
+	        return false;
+	    } else {
+	        return currentBudgetPlanId != budgetPlans.length - 1;
+	    }
 	}
 	
+	/**
+	 * @dev Get number of proposals. 
+	 */
+	function numberOfProposals() public view returns (uint256) {
+	    return proposals.length;
+	}
+	
+	/**
+	 * @dev Get number of budget plans. 
+	 */
+	function numberOfBudgetPlan() public view returns (uint256) {
+	    return budgetPlans.length;
+	}
+	
+	/**
+	 * @dev Try to finialize the last proposal.
+	 */
 	function tryFinializeLastProposal() inWithdrawState public {
 	    if (proposals.length == 0) {
 	        return;
@@ -152,6 +242,10 @@ contract StrayFund is Ownable {
 	    }
 	}
 	
+	/**
+	 * @dev Create new tap proposal by address out of company.
+	 * @param _targetWei The voting target.
+	 */
 	function newTapProposalFromTokenHolders(uint256 _targetWei)
 	    onlyTokenHolders 
 	    inWithdrawState 
@@ -176,15 +270,16 @@ contract StrayFund is Ownable {
 		require(now <= b.officalVotingTime && now >= b.startTime);
 		
 		// Sponsor is not allowed to propose repeatly in the same budget period.
-		require(!_hasProposed(msg.sender, ProposalType.TapFromTokenHolder));
-		
-		// The minimum wei requirement.
-		require(_targetWei >= MIN_WITHDRAW_WEI);
+		require(!_hasProposed(msg.sender, ProposalType.Tap));
 		
 		// Create a new proposal.
-		_newTapProposal(ProposalType.TapFromTokenHolder, _targetWei);
+		_newTapProposal(ProposalType.Tap, _targetWei);
 	}
 	
+	/**
+	 * @dev Create new tap proposal by company.
+	 * @param _targetWei The voting target.
+	 */
 	function newTapProposalFromCompany(uint256 _targetWei)
 	    onlyOwner 
 	    inWithdrawState 
@@ -204,13 +299,13 @@ contract StrayFund is Ownable {
 	    BudgetPlan storage b = budgetPlans[currentBudgetPlanId];
 		require(now >= b.officalVotingTime);
 		
-		// The minimum wei requirement.
-		require(_targetWei >= MIN_WITHDRAW_WEI);
-		
 		// Create a new proposal.
-		_newTapProposal(ProposalType.TapFromCompany, _targetWei);
+		_newTapProposal(ProposalType.OfficalTap, _targetWei);
 	}
 	
+	/**
+	 * @dev Create a refund proposal.
+	 */
 	function newRefundProposal() onlyTokenHolders inWithdrawState public {
 	    // Check the last result.
 	    tryFinializeLastProposal();
@@ -236,7 +331,11 @@ contract StrayFund is Ownable {
 		emit RefundProposalAdded(p.openingTime, p.closingTime);
 	}
 	
-	function voteForTap(bool supportsProposal)
+	/**
+	 * @dev Vote for a tap proposal.
+	 * @param _supportsProposal True if the vote supports the proposal.
+	 */
+	function voteForTap(bool _supportsProposal)
 	    onlyTokenHolders
 	    inWithdrawState
 	    public
@@ -253,14 +352,18 @@ contract StrayFund is Ownable {
 		// Record the vote.
 		uint256 voteId = p.votes.length++;
 		p.votes[voteId].tokeHolder = msg.sender;
-		p.votes[voteId].inSupport = supportsProposal;
+		p.votes[voteId].inSupport = _supportsProposal;
 		p.voted[msg.sender] = true;
 		
 		// Signal the event.
-		emit TapVoted(msg.sender, supportsProposal);
+		emit TapVoted(msg.sender, _supportsProposal);
 	}
 	
-	function voteForRefund(bool supportsProposal)
+	/**
+	 * @dev Vote for a tap proposal.
+	 * @param _supportsProposal True if the vote supports the proposal.
+	 */
+	function voteForRefund(bool _supportsProposal)
 	    onlyTokenHolders
 	    inWithdrawState
 	    public
@@ -277,13 +380,17 @@ contract StrayFund is Ownable {
 		// Record the vote.
 		uint256 voteId = p.votes.length++;
 		p.votes[voteId].tokeHolder = msg.sender;
-		p.votes[voteId].inSupport = supportsProposal;
+		p.votes[voteId].inSupport = _supportsProposal;
 		p.voted[msg.sender] = true;
 		
 		// Signal the event.
-		emit RefundVoted(msg.sender, supportsProposal);
+		emit RefundVoted(msg.sender, _supportsProposal);
 	}
 	
+	/**
+	 * @dev Withdraw the wei to team wallet.
+	 * @param _amount Withdraw wei.
+	 */
 	function withdraw(uint256 _amount) onlyOwner inWithdrawState public {
 	    // Check the last result.
 	    tryFinializeLastProposal();
@@ -300,6 +407,9 @@ contract StrayFund is Ownable {
 	    _withdraw(_amount);
 	}
 	
+	/**
+	 * @dev Withdraw when there is no budget plans.
+	 */
 	function withdrawOnNoAvailablePlan() onlyOwner inWithdrawState public {
 	    require(address(this).balance >= MIN_WITHDRAW_WEI);
 	    
@@ -322,7 +432,7 @@ contract StrayFund is Ownable {
 	    BudgetPlan storage plan = budgetPlans[planId];
 	    plan.proposalId = NON_UINT256;
 	    plan.budgetInWei = MIN_WITHDRAW_WEI;
-	    plan.withdrawnWei = MIN_WITHDRAW_WEI;
+	    plan.withdrawnWei = 0;
 	    plan.startTime = now;
 	    (plan.endTime, plan.officalVotingTime) = _budgetEndAndOfficalVotingTime(now);
 	    
@@ -332,7 +442,10 @@ contract StrayFund is Ownable {
 	    _withdraw(MIN_WITHDRAW_WEI);
 	}
 	
-	function refund() onlyTokenHolders public {
+	/**
+     * @dev Tokenholders can claim refunds here.
+     */
+	function claimRefund() onlyTokenHolders public {
 	    // Check the state.
 		require(state == State.Refunding);
 		
@@ -345,6 +458,20 @@ contract StrayFund is Ownable {
 		
 		// Signal the event.
 		msg.sender.transfer(amount);
+	}
+	
+	/**
+     * @dev Receive the initial funds from crowdsale contract.
+     */
+	function receiveInitialFunds() payable public {
+	    require(state == State.NotReady);
+	}
+	
+	/**
+     * @dev Fallback function to receive initial funds.
+     */
+	function () payable public {
+	    receiveInitialFunds();
 	}
 	
 	function _withdraw(uint256 _amount) internal {
@@ -425,12 +552,15 @@ contract StrayFund is Ownable {
 	}
 	
 	function _newTapProposal(ProposalType _proposalType, uint256 _targetWei) internal {
+	    // The minimum wei requirement.
+		require(_targetWei >= MIN_WITHDRAW_WEI && _targetWei <= address(this).balance);
+	    
 	    uint256 id = proposals.length++;
         Proposal storage p = proposals[id];
         p.proposalType = _proposalType;
 		p.sponsor = msg.sender;
 		p.openingTime = now;
-		p.closingTime = now + 1 weeks;
+		p.closingTime = now + VOTING_DURATION;
 		p.isPassed = false;
 		p.isFinialized = false;
 		p.targetWei = _targetWei;
@@ -545,15 +675,19 @@ contract StrayFund is Ownable {
             return false;
         } else {
             BudgetPlan storage b = budgetPlans[currentBudgetPlanId];
-            for (uint256 i = proposals.length - 1; i != 0; --i) {
+            for (uint256 i = proposals.length - 1;; --i) {
                 Proposal storage p = proposals[i];
                 if (p.openingTime < b.startTime) {
                     return false;
-                } else  if (p.openingTime <= b.endTime 
+                } else if (p.openingTime <= b.endTime 
                             && p.sponsor == _sponsor 
-                            && p.proposalType == proposalType) {
+                            && p.proposalType == proposalType
+                            && !p.isPassed) {
                     return true;
                 }
+                
+                if (i == 0)
+                    break;
             }
             return false;
         }
