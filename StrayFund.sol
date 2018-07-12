@@ -86,8 +86,7 @@ contract StrayFund is Ownable {
 	uint256 public FIRST_WITHDRAW_RATE = 20;
 	
 	// The voting duration.
-	//uint256 public VOTING_DURATION = 1 weeks;
-	uint256 public VOTING_DURATION = 1 minutes;
+	uint256 public VOTING_DURATION = 1 weeks;
 	
 	// Offical voting day of the last month of budget period. 
 	uint8 public OFFICAL_VOTING_DAY_OF_MONTH = 23;
@@ -124,20 +123,6 @@ contract StrayFund is Ownable {
 	    _;
 	}
 	
-	/*
-		constructor() public {
-	    address _teamWallet = msg.sender;
-	    StrayToken t = new StrayToken(0x14723a09acff6d2a60dcdf7aa4aff308fddc160c
-	        , 0x4b0897b0513fdc7c541b6d9d7e929c4e5364d2db);
-	    t.transfer(msg.sender, t.balanceOf(address(this)).mul(8).div(10));
-	    t.transfer(0x583031d1113ad414f02576bd6afabfb302140225, t.balanceOf(address(this)));
-	    t.setFundContract(address(this));
-	    t.transferOwnership(msg.sender);
-	    
-	    address _token = address(t);
-
-	}
-	*/
 	/**
 	 * @param _teamWallet The wallet which receives the funds.
 	 * @param _token Stray token address.
@@ -459,6 +444,20 @@ contract StrayFund is Ownable {
 		// Signal the event.
 		msg.sender.transfer(amount);
 	}
+	
+	/**
+	 * @dev Check if refund is in lock period.
+	 */
+	 function isRefundLocked() public view returns (bool) {
+	     return state == State.Refunding && now < refundLockDate + REFUND_LOCK_DURATION;
+	 }
+	
+	/**
+	 * @dev Get remaining funds.
+	 */
+	 function remainingFunds() public view returns (uint256) {
+	     return address(this).balance;
+	 }
 	
 	/**
      * @dev Receive the initial funds from crowdsale contract.

@@ -42,8 +42,8 @@ contract StrayToken is StandardToken, BurnableToken, Ownable {
 		_preSale(privateWallet, totalSupply_.mul(25).div(100));
 		
 		// 60% of tokens for crowdsale.
-		uint256 saled = balances[companyWallet].add(balances[privateWallet]);
-	    balances[msg.sender] = totalSupply_ - saled;
+		uint256 sold = balances[companyWallet].add(balances[privateWallet]);
+	    balances[msg.sender] = balances[msg.sender].add(totalSupply_.sub(sold));
 	    emit Transfer(address(0), msg.sender, balances[msg.sender]);
 	}
 	

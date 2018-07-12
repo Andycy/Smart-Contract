@@ -3,7 +3,6 @@ pragma solidity ^0.4.24;
 import "./openzeppelin-solidity/contracts/crowdsale/distribution/FinalizableCrowdsale.sol";
 import "./openzeppelin-solidity/contracts/crowdsale/distribution/utils/RefundVault.sol";
 import "./StrayToken.sol";
-import "./StrayFund.sol";
 
 /**
  * @title StrayCrowdsale
@@ -32,10 +31,6 @@ contract StrayCrowdsale is FinalizableCrowdsale {
     // Mininum contribute: 100 USD.
     uint256 public mininumContributeUSD = 100;
     
-    // The exchange rate from USD to Token.
-    // 1 USD => 100 Token (0.01 USD => 1 Token).
-    uint256 public exchangeRateUSDToToken = 100;
-    
     // The floating exchange rate from external API.
     uint256 public decimalsETHToUSD;
     uint256 public exchangeRateETHToUSD;
@@ -46,35 +41,21 @@ contract StrayCrowdsale is FinalizableCrowdsale {
     // The calculated mininum contribute Wei.
     uint256 public mininumContributeWei;
     
+    // The exchange rate from USD to Token.
+    // 1 USD => 100 Token (0.01 USD => 1 Token).
+    uint256 public exchangeRateUSDToToken = 100;
+    
     // Stray token contract.
     StrayToken public strayToken;
     
     // Refund vault used to hold funds while crowdsale is running
     RefundVault public vault;
     
-    // Stray fund contract.
-    StrayFund public fund;
-    
-     /* debug only
-      constructor() 
-        Crowdsale(1, msg.sender
-            , new StrayToken(0x14723a09acff6d2a60dcdf7aa4aff308fddc160c
-                , 0x4b0897b0513fdc7c541b6d9d7e929c4e5364d2db))
-        TimedCrowdsale(now, now + 5 minutes)
-        public 
-        {
-        uint256 _bonusClosingTime0 = now + 1 minutes;
-        uint256 _bonusClosingTime1 = now + 2 minutes;
-        uint256 _openingTime = now;
-        uint256 _closingTime = now + 5 minutes;
-        uint256 _softCapInUSD = 10000;
-        uint256 _hardCapInUSD = 4000000;
-      */
     /**
      * @param _softCapInUSD Minimal funds to be collected.
      * @param _hardCapInUSD Maximal funds to be collected.
-     * @param _companyWallet Company wallet for 15% token reservation.
-     * @param _privateWallet Private wallet from 25% token reservation.
+     * @param _fund The Stray DAICO fund contract address.
+     * @param _token Stray ERC20 contract.
      * @param _openingTime Crowdsale opening time.
      * @param _closingTime Crowdsale closing time.
      * @param _bonusClosingTime0 Bonus stage0 closing time.
@@ -82,14 +63,14 @@ contract StrayCrowdsale is FinalizableCrowdsale {
      */
     constructor(uint256 _softCapInUSD
         , uint256 _hardCapInUSD
-        , address _companyWallet
-        , address _privateWallet
+        , address _fund
+        , ERC20 _token
         , uint256 _openingTime
         , uint256 _closingTime
         , uint256 _bonusClosingTime0
         , uint256 _bonusClosingTime1
         ) 
-        Crowdsale(1, msg.sender, new StrayToken(_companyWallet, _privateWallet))
+        Crowdsale(1, _fund, _token)
         TimedCrowdsale(_openingTime, _closingTime)
         public 
     {
@@ -110,17 +91,10 @@ contract StrayCrowdsale is FinalizableCrowdsale {
         softCapInToken = _softCapInUSD * exchangeRateUSDToToken * (10 ** uint256(strayToken.decimals()));
         hardCapInToken = _hardCapInUSD * exchangeRateUSDToToken * (10 ** uint256(strayToken.decimals()));
         
-        require(strayToken.balanceOf(address(this)) >= hardCapInToken);
-        
-        // Create thr fund contract.
-        fund = new StrayFund(msg.sender, address(strayToken));
-        
-        // Set fund contract to straytoken.
-        strayToken.setFundContract(address(fund));
-        strayToken.transferOwnership(msg.sender);
+        require(strayToken.balanceOf(owner) >= hardCapInToken);
         
         // Create the refund vault.
-        vault = new RefundVault(address(fund));
+        vault = new RefundVault(_fund);
         
         // Calculate mininum purchase token.
         mininumPurchaseTokenQuantity = exchangeRateUSDToToken * mininumContributeUSD 
@@ -231,8 +205,6 @@ contract StrayCrowdsale is FinalizableCrowdsale {
     function finalization() internal {
         if (softCapReached()) {
             vault.close();
-            fund.enableTeamWithdraw();
-            fund.transferOwnership(owner);
         } else {
             vault.enableRefunds();
         }
