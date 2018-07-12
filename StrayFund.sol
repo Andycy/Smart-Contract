@@ -92,8 +92,7 @@ contract StrayFund is Ownable {
 	uint8 public OFFICAL_VOTING_DAY_OF_MONTH = 23;
 	
 	// Refund lock duration.
-	//uint256 public REFUND_LOCK_DURATION = 30 days;
-	uint256 public REFUND_LOCK_DURATION = 30 seconds;
+	uint256 public REFUND_LOCK_DURATION = 30 days;
 	
 	// Refund lock date.
 	uint256 public refundLockDate = 0;
