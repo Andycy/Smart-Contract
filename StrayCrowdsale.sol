@@ -51,6 +51,9 @@ contract StrayCrowdsale is FinalizableCrowdsale {
     // Refund vault used to hold funds while crowdsale is running
     RefundVault public vault;
     
+    // Event 
+    event RateUpdated(uint256 rate, uint256 mininumContributeWei);
+    
     /**
      * @param _softCapInUSD Minimal funds to be collected.
      * @param _hardCapInUSD Maximal funds to be collected.
@@ -134,6 +137,8 @@ contract StrayCrowdsale is FinalizableCrowdsale {
         // Avoid rounding error.
         if (mininumContributeWei * rate < mininumPurchaseTokenQuantity)
             mininumContributeWei += 1;
+            
+        emit RateUpdated(rate, mininumContributeWei);
     }
     
     /**
